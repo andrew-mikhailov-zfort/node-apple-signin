@@ -90,12 +90,18 @@ const refreshAuthorizationToken = async (refreshToken, options) => {
   return JSON.parse(body);
 };
 
-const getApplePublicKey = async () => {
+const extractPublicKey = async (index) => {
+
   const url = new URL(ENDPOINT_URL);
   url.pathname = '/auth/keys';
 
   const data = await request({ url: url.toString(), method: 'GET' });
-  const key = JSON.parse(data).keys[0];
+  const key = JSON.parse(data).keys[index];
+
+  // No key at given index
+  if (!key) {
+    return undefined;
+  }
 
   const pubKey = new NodeRSA();
   pubKey.importKey({ n: Buffer.from(key.n, 'base64'), e: Buffer.from(key.e, 'base64') }, 'components-public');
@@ -103,16 +109,37 @@ const getApplePublicKey = async () => {
 };
 
 const verifyIdToken = async (idToken, clientID) => {
-  const applePublicKey = await getApplePublicKey();
-  const jwtClaims = jwt.verify(idToken, applePublicKey, { algorithms: 'RS256' });
 
-  if (jwtClaims.iss !== TOKEN_ISSUER) throw new Error('id token not issued by correct OpenID provider - expected: ' + TOKEN_ISSUER + ' | from: ' + jwtClaims.iss);
-  if (clientID !== undefined && jwtClaims.aud !== clientID) throw new Error('aud parameter does not include this client - is: ' + jwtClaims.aud + '| expected: ' + clientID);
-  if (jwtClaims.exp < (Date.now() / 1000)) throw new Error('id token has expired');
+  let jwtClaims;
+
+  // For all keys
+  for (let i = 0; ; i++) {
+
+    const publicKey = await extractPublicKey(i);
+
+    // No more keys
+    if (!publicKey) {
+      break;
+    }
+
+    try {
+      jwtClaims = jwt.verify(idToken, publicKey, {algorithms: 'RS256'});
+      if (jwtClaims.iss !== TOKEN_ISSUER) throw new Error('id token not issued by correct OpenID provider - expected: ' + TOKEN_ISSUER + ' | from: ' + jwtClaims.iss);
+      if (clientID !== undefined && jwtClaims.aud !== clientID) throw new Error('aud parameter does not include this client - is: ' + jwtClaims.aud + '| expected: ' + clientID);
+      if (jwtClaims.exp < (Date.now() / 1000)) throw new Error('id token has expired');
+    } catch {
+      // TODO: Whether we need to handle a trial to decrypt with a bad key?
+      console.log("node-apple-signin", "tried improper key");
+    }
+
+    // Found the key which can decrypt the token
+    if (jwtClaims) {
+      break;
+    }
+  }
 
   return jwtClaims;
 };
-
 
 module.exports = {
   getAuthorizationUrl,
